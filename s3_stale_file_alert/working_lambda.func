@@ -1,0 +1,71 @@
+import json
+import boto3
+from datetime import datetime, timezone
+
+# Initialize Boto3 client
+s3 = boto3.client('s3')
+sns = boto3.client('sns')
+
+# Get locations to monitor from S3 file
+def get_locations():
+    bucket_name = 'scripts_config'
+    file_key = 'wit_stale_outbound_alert.config'
+    try:
+        response = s3.get_object(Bucket=bucket_name, Key=file_key)
+        content = response['Body'].read().decode('utf-8')
+        return content
+    except Exception as e:
+        print(f"Error reading file: {e}")
+
+# Check each bucket for stale files
+def check_location(bucket, key, extn):
+    bucket_name = bucket
+    file_key = key
+    send_sns_flag = 0
+
+    response = s3.list_objects_v2(Bucket=bucket_name, Prefix=file_key)
+
+    xtn_len = len(extn) * -1
+
+    # Extract the LastModified timestamp
+    if 'Contents' in response:
+        for obj in response['Contents']:
+            if obj['Key'][xtn_len:] == extn:
+                last_modified = obj['LastModified']
+                # Calculate the time difference in minutes
+                current_time = datetime.now(timezone.utc)
+                time_difference_minutes = (current_time - last_modified).total_seconds() / 60
+                # Signal state files at > 15 mins
+                if time_difference_minutes > 15:
+                    send_sns_flag = 1
+                    break
+        if send_sns_flag == 1:
+            send_sns(f"Stale file/s detected in s3://{bucket}/{key}")
+    else:
+        print(f"The file {file_key} does not exist in the bucket {bucket_name}")
+
+def send_sns(message):
+    # Send to sns topic
+    response = sns.publish(
+        TopicArn='arn:aws:sns:ap-southeast-1:XXXXX:wit-test-sns-topic',
+        Subject='Stale outbound alert!',
+        Message=message
+    )
+    return response
+
+
+## MAIN
+def lambda_handler(event, context):
+    # Read config
+    locations = get_locations()
+    lines = locations.split("\n")
+    for line in lines:
+        if line:
+            col = line.split(",")
+            check_location(col[0], col[1], col[2])
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Lambda complete.')
+    }
+
